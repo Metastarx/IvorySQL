@@ -36,13 +36,12 @@
  *   LENGTH(r)               octet length of r.
  *
  *   SUBSTR(r, pos, len)     1-based byte slice.  A negative pos counts
- *                           backwards from the end of r (-1 is the last byte)
- *                           and is clamped to the first byte when it points
- *                           before the start.  Oracle raises ORA-06502
- *                           (VALUE_ERROR) when pos is 0, when pos is past the
- *                           end of r, when len is less than 1, and when len
- *                           runs past the end of r.  A NULL len means "through
- *                           the end of r".
+ *                           backwards from the end of r (-1 is the last byte).
+ *                           Oracle raises ORA-06502 (VALUE_ERROR) when pos is
+ *                           0, when pos resolves before the first byte, when
+ *                           pos is past the end of r, when len is less than 1,
+ *                           and when len runs past the end of r.  A NULL len
+ *                           means "through the end of r".
  *
  *   CONCAT(r1..r12)         the non-NULL arguments concatenated in order.
  *                           Every argument defaults to NULL; the result is
@@ -130,8 +129,9 @@ raw_new(int len)
 /*
  * Shared implementation of the 2-argument (has_len == false) and 3-argument
  * (has_len == true) SUBSTR variants.  Oracle raises ORA-06502 (VALUE_ERROR)
- * when pos is 0, when pos is past the end of the RAW, when len is below one,
- * and when len runs past the end of the RAW.
+ * when pos is 0, when pos resolves before the first byte, when pos is past the
+ * end of the RAW, when len is below one, and when len runs past the end of the
+ * RAW.
  */
 static bytea *
 raw_substr(bytea *r, int32 pos, int32 len, bool has_len)
@@ -153,9 +153,11 @@ raw_substr(bytea *r, int32 pos, int32 len, bool has_len)
 	else
 		start = rlen + (int64) pos + 1;
 
-	/* A negative pos that points before the first byte starts at byte 1. */
 	if (start < 1)
-		start = 1;
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("UTL_RAW.SUBSTR: position %d is before the start of the RAW",
+						pos)));
 
 	if (start > rlen)
 		ereport(ERROR,
