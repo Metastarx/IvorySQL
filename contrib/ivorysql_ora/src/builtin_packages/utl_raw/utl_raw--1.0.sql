@@ -17,11 +17,16 @@
  * Register the C implementations in the sys schema.
  * Input/output use bytea (RAW maps to bytea in IvorySQL).
  * STRICT: a NULL argument yields NULL.
+ *
+ * XRANGE is deliberately not STRICT: a NULL bound means the Oracle default
+ * (X'00' for start_byte, X'FF' for end_byte), so the defaults are declared
+ * here and the NULLs are handled inside the C function.
  */
-CREATE FUNCTION sys.utl_raw_xrange(bytea, bytea)
+CREATE FUNCTION sys.utl_raw_xrange(start_byte bytea DEFAULT NULL,
+                                   end_byte bytea DEFAULT NULL)
 RETURNS bytea
 AS 'MODULE_PATHNAME', 'utl_raw_xrange'
-LANGUAGE C IMMUTABLE PARALLEL SAFE STRICT;
+LANGUAGE C IMMUTABLE PARALLEL SAFE;
 
 CREATE FUNCTION sys.utl_raw_cast_to_varchar2(bytea)
 RETURNS text
@@ -48,8 +53,11 @@ CREATE OR REPLACE PACKAGE UTL_RAW IS
     -- CAST_TO_RAW: the bytes of c in the database character set
     FUNCTION CAST_TO_RAW(c IN VARCHAR2) RETURN RAW;
 
-    -- XRANGE: the inclusive range of one-byte values start_byte..end_byte
-    FUNCTION XRANGE(start_byte IN RAW, end_byte IN RAW) RETURN RAW;
+    -- XRANGE: the inclusive range of one-byte values start_byte..end_byte.
+    -- A NULL bound means the Oracle default (X'00' / X'FF'), and the range
+    -- wraps through X'FF' to X'00' when start_byte is greater than end_byte.
+    FUNCTION XRANGE(start_byte IN RAW DEFAULT NULL,
+                    end_byte IN RAW DEFAULT NULL) RETURN RAW;
 
     -- CAST_TO_VARCHAR2: reinterpret the bytes of r as database-encoding text
     FUNCTION CAST_TO_VARCHAR2(r IN RAW) RETURN VARCHAR2;
@@ -74,7 +82,8 @@ CREATE OR REPLACE PACKAGE BODY UTL_RAW IS
         RETURN pg_catalog.convert_to(c::text, pg_catalog.getdatabaseencoding());
     END;
 
-    FUNCTION XRANGE(start_byte IN RAW, end_byte IN RAW) RETURN RAW IS
+    FUNCTION XRANGE(start_byte IN RAW DEFAULT NULL,
+                    end_byte IN RAW DEFAULT NULL) RETURN RAW IS
     BEGIN
         RETURN sys.utl_raw_xrange(start_byte, end_byte);
     END;

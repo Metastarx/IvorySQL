@@ -107,15 +107,18 @@ utl_raw_is_little_endian(int32 endian)
  * sys.utl_raw_xrange(bytea, bytea) RETURNS bytea
  *
  * XRANGE(start_byte, end_byte): build the inclusive byte range
- * start_byte..end_byte.  Both bounds are single-byte RAWs; an inverted range
- * is an error rather than an empty value, matching Oracle.
+ * start_byte..end_byte.  A NULL bound selects the Oracle default, X'00' for
+ * start_byte and X'FF' for end_byte, and an inverted range wraps around the
+ * 8-bit space, so XRANGE(X'FE', X'01') yields FE FF 00 01.  A non-NULL bound
+ * must still be a single-byte RAW.
+ *
+ * The function is intentionally not STRICT: STRICT would short-circuit on a
+ * NULL argument and return NULL before the defaults below are applied.
  */
 PG_FUNCTION_INFO_V1(utl_raw_xrange);
 Datum
 utl_raw_xrange(PG_FUNCTION_ARGS)
 {
-	bytea	   *start = PG_GETARG_BYTEA_PP(0);
-	bytea	   *end = PG_GETARG_BYTEA_PP(1);
 	unsigned char first;
 	unsigned char last;
 	int			len;
@@ -123,25 +126,36 @@ utl_raw_xrange(PG_FUNCTION_ARGS)
 	bytea	   *result;
 	unsigned char *out;
 
-	if (VARSIZE_ANY_EXHDR(start) != 1)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("UTL_RAW.XRANGE: start_byte must be exactly one byte")));
-	if (VARSIZE_ANY_EXHDR(end) != 1)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("UTL_RAW.XRANGE: end_byte must be exactly one byte")));
+	/* start_byte defaults to X'00' when omitted or NULL. */
+	if (PG_ARGISNULL(0))
+		first = 0x00;
+	else
+	{
+		bytea	   *start = PG_GETARG_BYTEA_PP(0);
 
-	first = *(unsigned char *) VARDATA_ANY(start);
-	last = *(unsigned char *) VARDATA_ANY(end);
+		if (VARSIZE_ANY_EXHDR(start) != 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("UTL_RAW.XRANGE: start_byte must be exactly one byte")));
+		first = *(unsigned char *) VARDATA_ANY(start);
+	}
 
-	if (first > last)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("UTL_RAW.XRANGE: start_byte (0x%02X) is greater than end_byte (0x%02X)",
-						first, last)));
+	/* end_byte defaults to X'FF' when omitted or NULL. */
+	if (PG_ARGISNULL(1))
+		last = 0xFF;
+	else
+	{
+		bytea	   *end = PG_GETARG_BYTEA_PP(1);
 
-	len = (int) last - (int) first + 1;
+		if (VARSIZE_ANY_EXHDR(end) != 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("UTL_RAW.XRANGE: end_byte must be exactly one byte")));
+		last = *(unsigned char *) VARDATA_ANY(end);
+	}
+
+	/* Inclusive length; masks so an inverted range wraps through X'FF'. */
+	len = (int) (((last - first) & 0xFF) + 1);
 	result = (bytea *) palloc(VARHDRSZ + len);
 	SET_VARSIZE(result, VARHDRSZ + len);
 	out = (unsigned char *) VARDATA(result);

@@ -50,20 +50,29 @@ SELECT UTL_RAW.XRANGE(hextoraw('00'), hextoraw('00')) = hextoraw('00');
 
 SELECT UTL_RAW.XRANGE(hextoraw('FE'), hextoraw('FF')) = hextoraw('FEFF');
 
--- NULL propagation (STRICT)
-SELECT UTL_RAW.XRANGE(NULL, hextoraw('20')) IS NULL;
+-- A NULL bound selects the Oracle default: X'00' for start_byte, X'FF' for
+-- end_byte.  XRANGE is not STRICT, so the C function receives the NULLs.
+SELECT UTL_RAW.XRANGE(NULL, hextoraw('20'))
+       = hextoraw('000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20');
 
-SELECT UTL_RAW.XRANGE(hextoraw('20'), NULL) IS NULL;
+SELECT UTL_RAW.XRANGE(hextoraw('FD'), NULL) = hextoraw('FDFEFF');
 
--- An inverted range is rejected
-DO $$
-BEGIN
-    PERFORM UTL_RAW.XRANGE(hextoraw('2F'), hextoraw('20'));
-    RAISE NOTICE 'XRANGE inverted range: no error';
-EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'XRANGE inverted range: error as expected';
-END;
-$$;
+SELECT pg_catalog.octet_length(UTL_RAW.XRANGE(NULL, NULL)) = 256;
+
+-- Omitted arguments fall back to the same defaults as explicit NULLs
+SELECT UTL_RAW.XRANGE() = UTL_RAW.XRANGE(NULL, NULL);
+
+SELECT UTL_RAW.XRANGE(hextoraw('FE')) = hextoraw('FEFF');
+
+-- An inverted range wraps through X'FF' to X'00'
+SELECT UTL_RAW.XRANGE(hextoraw('FE'), hextoraw('01')) = hextoraw('FEFF0001');
+
+-- 0x2F..0x20 wraps: 0x2F..0xFF (209 bytes) followed by 0x00..0x20 (33 bytes)
+SELECT pg_catalog.octet_length(UTL_RAW.XRANGE(hextoraw('2F'), hextoraw('20'))) = 242,
+       pg_catalog.get_byte(UTL_RAW.XRANGE(hextoraw('2F'), hextoraw('20')), 0) = 47,
+       pg_catalog.get_byte(UTL_RAW.XRANGE(hextoraw('2F'), hextoraw('20')), 208) = 255,
+       pg_catalog.get_byte(UTL_RAW.XRANGE(hextoraw('2F'), hextoraw('20')), 209) = 0,
+       pg_catalog.get_byte(UTL_RAW.XRANGE(hextoraw('2F'), hextoraw('20')), 241) = 32;
 
 -- Both bounds must be exactly one byte
 DO $$
@@ -160,6 +169,17 @@ $$;
 SELECT sys.utl_raw_xrange(hextoraw('20'), hextoraw('2F'))
        = hextoraw('202122232425262728292A2B2C2D2E2F');
 
+-- The direct entry point applies the same NULL and omitted-argument defaults
+SELECT sys.utl_raw_xrange(NULL, hextoraw('02')) = hextoraw('000102');
+
+SELECT sys.utl_raw_xrange(hextoraw('FD'), NULL) = hextoraw('FDFEFF');
+
+SELECT pg_catalog.octet_length(sys.utl_raw_xrange(NULL, NULL)) = 256;
+
+SELECT sys.utl_raw_xrange() = sys.utl_raw_xrange(NULL, NULL);
+
+SELECT sys.utl_raw_xrange(hextoraw('FE'), hextoraw('01')) = hextoraw('FEFF0001');
+
 SELECT sys.utl_raw_cast_to_varchar2(hextoraw('68656C6C6F')) = 'hello';
 
 SELECT rawtohex(sys.utl_raw_cast_from_binary_integer(1, 1)) = '00000001';
@@ -209,6 +229,11 @@ BEGIN
         RAISE NOTICE 'XRANGE bytes OK';
     ELSE
         RAISE NOTICE 'XRANGE bytes FAILED';
+    END IF;
+    IF UTL_RAW.XRANGE(hextoraw('FE'), hextoraw('01')) = hextoraw('FEFF0001') THEN
+        RAISE NOTICE 'XRANGE wrap-around OK';
+    ELSE
+        RAISE NOTICE 'XRANGE wrap-around FAILED';
     END IF;
     IF UTL_RAW.CAST_TO_VARCHAR2(UTL_RAW.CAST_TO_RAW('raw')) = 'raw' THEN
         RAISE NOTICE 'CAST_TO_VARCHAR2 round-trip OK';
