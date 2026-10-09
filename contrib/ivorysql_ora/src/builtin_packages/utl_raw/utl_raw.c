@@ -39,8 +39,8 @@
  *                           A negative pos counts backwards from the end of r
  *                           (-1 is the last byte) and is clamped to the first
  *                           byte when it points before the start.  A pos past
- *                           the end of r, or a len less than 1, yields NULL.
- *                           A NULL len means "through the end of r".
+ *                           the end of r, or a len less than 1, raises
+ *                           ORA-06502.  A NULL len means "through the end of r".
  *
  *   CONCAT(r1..r12)         the non-NULL arguments concatenated in order.
  *                           Every argument defaults to NULL; the result is
@@ -53,9 +53,10 @@
  *                           pad means 0x00, the Oracle default); pad repeats
  *                           if it is shorter than the length difference.
  *
- *   BIT_AND/OR/XOR(r1, r2)  byte-wise logical operation; the arguments must
- *                           have exactly the same length, otherwise an error
- *                           is raised (Oracle reports ORA-06502).
+ *   BIT_AND/OR/XOR(r1, r2)  byte-wise logical operation over the longer
+ *                           operand, with the shorter one padded -- X'FF' for
+ *                           BIT_AND, X'00' for BIT_OR and BIT_XOR, as Oracle
+ *                           does.
  *
  *   BIT_COMPLEMENT(r)       byte-wise one's complement (~b for every byte).
  *
@@ -126,8 +127,8 @@ raw_new(int len)
 
 /*
  * Shared implementation of the 2-argument (has_len == false) and 3-argument
- * (has_len == true) SUBSTR variants.  Returns NULL when the request falls
- * outside the RAW, matching Oracle.
+ * (has_len == true) SUBSTR variants.  A position past the end of the RAW and a
+ * length below one raise ORA-06502, matching Oracle.
  */
 static bytea *
 raw_substr(bytea *r, int32 pos, int32 len, bool has_len)
@@ -151,19 +152,25 @@ raw_substr(bytea *r, int32 pos, int32 len, bool has_len)
 	if (start < 1)
 		start = 1;
 
+	/*
+	 * Oracle reports ORA-06502 for a length below one and for a position past
+	 * the end of the RAW instead of returning NULL.
+	 */
+	if (has_len && len < 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("UTL_RAW.SUBSTR: length must be greater than zero")));
+
+	if (start > rlen)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("UTL_RAW.SUBSTR: position %d is past the end of the RAW",
+						pos)));
+
 	if (has_len)
-	{
-		/* Oracle returns NULL for a non-positive length. */
-		if (len < 1)
-			return NULL;
 		end = start + (int64) len - 1;
-	}
 	else
 		end = rlen;
-
-	/* A start past the end of the RAW yields NULL, as in Oracle. */
-	if (start > rlen)
-		return NULL;
 
 	if (end > rlen)
 		end = rlen;
@@ -330,35 +337,38 @@ utl_raw_compare_pad(PG_FUNCTION_ARGS)
 
 /*
  * Shared implementation of BIT_AND (op 0), BIT_OR (op 1) and BIT_XOR (op 2).
- * Oracle requires both operands to have the same length.
+ *
+ * Oracle does not require the operands to have the same length: the shorter
+ * one is padded -- with X'FF' for BIT_AND (so the extra bytes keep the longer
+ * operand) and with X'00' for BIT_OR and BIT_XOR -- and the result is as long
+ * as the longer operand.
  */
 static bytea *
-raw_bitwise(bytea *r1, bytea *r2, int op, const char *fname)
+raw_bitwise(bytea *r1, bytea *r2, int op)
 {
 	int			len1 = (int) VARSIZE_ANY_EXHDR(r1);
 	int			len2 = (int) VARSIZE_ANY_EXHDR(r2);
 	const unsigned char *d1 = (const unsigned char *) VARDATA_ANY(r1);
 	const unsigned char *d2 = (const unsigned char *) VARDATA_ANY(r2);
+	unsigned char pad = (op == 0) ? (unsigned char) 0xFF : (unsigned char) 0x00;
+	int			len = Max(len1, len2);
 	bytea	   *result;
 	unsigned char *dst;
 	int			i;
 
-	if (len1 != len2)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("UTL_RAW.%s: the two arguments must have the same length",
-						fname)));
-
-	result = raw_new(len1);
+	result = raw_new(len);
 	dst = (unsigned char *) VARDATA(result);
-	for (i = 0; i < len1; i++)
+	for (i = 0; i < len; i++)
 	{
+		unsigned char b1 = (i < len1) ? d1[i] : pad;
+		unsigned char b2 = (i < len2) ? d2[i] : pad;
+
 		if (op == 0)
-			dst[i] = d1[i] & d2[i];
+			dst[i] = b1 & b2;
 		else if (op == 1)
-			dst[i] = d1[i] | d2[i];
+			dst[i] = b1 | b2;
 		else
-			dst[i] = d1[i] ^ d2[i];
+			dst[i] = b1 ^ b2;
 	}
 
 	return result;
@@ -371,7 +381,7 @@ Datum
 utl_raw_bit_and(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_BYTEA_P(raw_bitwise(PG_GETARG_BYTEA_PP(0),
-								  PG_GETARG_BYTEA_PP(1), 0, "BIT_AND"));
+								  PG_GETARG_BYTEA_PP(1), 0));
 }
 
 /*
@@ -381,7 +391,7 @@ Datum
 utl_raw_bit_or(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_BYTEA_P(raw_bitwise(PG_GETARG_BYTEA_PP(0),
-								  PG_GETARG_BYTEA_PP(1), 1, "BIT_OR"));
+								  PG_GETARG_BYTEA_PP(1), 1));
 }
 
 /*
@@ -391,7 +401,7 @@ Datum
 utl_raw_bit_xor(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_BYTEA_P(raw_bitwise(PG_GETARG_BYTEA_PP(0),
-								  PG_GETARG_BYTEA_PP(1), 2, "BIT_XOR"));
+								  PG_GETARG_BYTEA_PP(1), 2));
 }
 
 /*

@@ -128,7 +128,8 @@ CREATE OR REPLACE PACKAGE UTL_RAW IS
     -- COMPARE: 1-based position of the first differing byte, 0 if equal
     FUNCTION COMPARE(r1 IN RAW, r2 IN RAW, pad IN RAW DEFAULT NULL) RETURN INTEGER;
 
-    -- BIT_AND/BIT_OR/BIT_XOR: byte-wise ops, equal-length operands required
+    -- BIT_AND/BIT_OR/BIT_XOR: byte-wise ops over the longer operand, with
+    -- the shorter one padded (X'FF' for BIT_AND, X'00' for BIT_OR/BIT_XOR)
     FUNCTION BIT_AND(r1 IN RAW, r2 IN RAW) RETURN RAW;
     FUNCTION BIT_OR(r1 IN RAW, r2 IN RAW) RETURN RAW;
     FUNCTION BIT_XOR(r1 IN RAW, r2 IN RAW) RETURN RAW;

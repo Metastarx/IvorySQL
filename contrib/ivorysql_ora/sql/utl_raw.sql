@@ -43,7 +43,9 @@ DROP DATABASE utl_raw_latin1;
 --   * SUBSTR counts forward from the beginning for pos > 0 and backwards from
 --     the end for pos < 0 (-1 is the last byte); pos = 0 is treated as 1 and a
 --     pos before the start is clamped to the first byte.  A pos past the end,
---     or a len < 1, returns NULL.
+--     or a len < 1, raises ORA-06502.
+--   * BIT_AND/BIT_OR/BIT_XOR work over the longer operand, padding the shorter
+--     one with X'FF' (BIT_AND) or X'00' (BIT_OR, BIT_XOR).
 --   * COMPARE pads the shorter operand with the pad RAW (0x00 when pad is
 --     NULL) and returns the 1-based position of the first differing byte.
 --   * TRANSLATE drops input bytes whose position is past the end of to_set
@@ -71,8 +73,35 @@ SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), -2) = hextoraw('4445');
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), -2, 1) = hextoraw('44');
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 0) = hextoraw('4142434445');
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), -10) = hextoraw('4142434445');
-SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 10) IS NULL;
-SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 2, 0) IS NULL;
+-- A position past the end of the RAW and a length below one are errors
+-- (ORA-06502).  The calls go through DO blocks so the expected output does not
+-- depend on PL/iSQL source line numbers.
+DO $$
+BEGIN
+    PERFORM UTL_RAW.SUBSTR(hextoraw('4142434445'), 10);
+    RAISE NOTICE 'SUBSTR past the end: no error';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'SUBSTR past the end: error as expected';
+END;
+$$;
+
+DO $$
+BEGIN
+    PERFORM UTL_RAW.SUBSTR(hextoraw('4142434445'), 2, 0);
+    RAISE NOTICE 'SUBSTR zero length: no error';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'SUBSTR zero length: error as expected';
+END;
+$$;
+
+DO $$
+BEGIN
+    PERFORM UTL_RAW.SUBSTR(hextoraw('4142434445'), 2, -1);
+    RAISE NOTICE 'SUBSTR negative length: no error';
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'SUBSTR negative length: error as expected';
+END;
+$$;
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 3, 100) = hextoraw('434445');
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 2, NULL) = hextoraw('42434445');
 SELECT UTL_RAW.SUBSTR(NULL, 1) IS NULL;
@@ -133,11 +162,19 @@ SELECT UTL_RAW.BIT_AND(NULL, hextoraw('FF')) IS NULL;
 SELECT UTL_RAW.BIT_OR(hextoraw('FF'), NULL) IS NULL;
 SELECT UTL_RAW.BIT_XOR(NULL, NULL) IS NULL;
 
--- Unequal operands are an error.  The C entry points are called directly so
--- the expected output does not depend on PL/iSQL source line numbers.
-SELECT sys.utl_raw_bit_and(hextoraw('0F0F'), hextoraw('00'));
-SELECT sys.utl_raw_bit_or(hextoraw('0F'), hextoraw('0000'));
-SELECT sys.utl_raw_bit_xor(hextoraw('0F'), hextoraw('0000'));
+-- Operands of different lengths are padded, not rejected: X'FF' keeps the
+-- longer operand under BIT_AND, X'00' leaves it under BIT_OR/BIT_XOR, and the
+-- result is as long as the longer operand.
+SELECT UTL_RAW.BIT_AND(hextoraw('FF'), hextoraw('0F0F')) = hextoraw('0F0F');
+
+SELECT UTL_RAW.BIT_OR(hextoraw('FF'), hextoraw('0F0F')) = hextoraw('FF0F');
+
+SELECT UTL_RAW.BIT_XOR(hextoraw('FF'), hextoraw('0F0F')) = hextoraw('F00F');
+
+-- The same rule through the C entry points, which the package wraps
+SELECT sys.utl_raw_bit_and(hextoraw('0F0F'), hextoraw('00')) = hextoraw('000F');
+
+SELECT sys.utl_raw_bit_xor(hextoraw('0F'), hextoraw('0000')) = hextoraw('0F00');
 
 -- ------------------------------------------------------------
 -- BIT_COMPLEMENT
