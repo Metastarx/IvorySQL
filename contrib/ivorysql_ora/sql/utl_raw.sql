@@ -41,9 +41,9 @@ DROP DATABASE utl_raw_latin1;
 -- Types Reference" entry for UTL_RAW.  The cases the documentation leaves
 -- implicit are pinned down here:
 --   * SUBSTR counts forward from the beginning for pos > 0 and backwards from
---     the end for pos < 0 (-1 is the last byte); pos = 0 is treated as 1 and a
---     pos before the start is clamped to the first byte.  A pos past the end,
---     or a len < 1, raises ORA-06502.
+--     the end for pos < 0 (-1 is the last byte); a pos before the start is
+--     clamped to the first byte.  A pos of 0, a pos past the end, a len < 1
+--     and a len that runs past the end all raise ORA-06502.
 --   * BIT_AND/BIT_OR/BIT_XOR work over the longer operand, padding the shorter
 --     one with X'FF' (BIT_AND) or X'00' (BIT_OR, BIT_XOR).
 --   * COMPARE pads the shorter operand with the pad RAW (0x00 when pad is
@@ -71,16 +71,27 @@ SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 2) = hextoraw('42434445');
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 2, 2) = hextoraw('4243');
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), -2) = hextoraw('4445');
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), -2, 1) = hextoraw('44');
-SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 0) = hextoraw('4142434445');
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), -10) = hextoraw('4142434445');
--- A position past the end of the RAW and a length below one are errors
--- (ORA-06502).  The calls go through DO blocks so the expected output does not
--- depend on PL/iSQL source line numbers.
+SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 2, NULL) = hextoraw('42434445');
+-- A pos of 0, a pos past the end of the RAW, a len below one and a len that
+-- runs past the end all raise VALUE_ERROR (ORA-06502) in Oracle 19c.  The
+-- calls go through DO blocks so the expected output does not depend on
+-- PL/iSQL source line numbers, and the handler names VALUE_ERROR, so an
+-- unrelated error still fails the test.
+DO $$
+BEGIN
+    PERFORM UTL_RAW.SUBSTR(hextoraw('4142434445'), 0);
+    RAISE NOTICE 'SUBSTR zero position: no error';
+EXCEPTION WHEN VALUE_ERROR THEN
+    RAISE NOTICE 'SUBSTR zero position: error as expected';
+END;
+$$;
+
 DO $$
 BEGIN
     PERFORM UTL_RAW.SUBSTR(hextoraw('4142434445'), 10);
     RAISE NOTICE 'SUBSTR past the end: no error';
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION WHEN VALUE_ERROR THEN
     RAISE NOTICE 'SUBSTR past the end: error as expected';
 END;
 $$;
@@ -89,7 +100,7 @@ DO $$
 BEGIN
     PERFORM UTL_RAW.SUBSTR(hextoraw('4142434445'), 2, 0);
     RAISE NOTICE 'SUBSTR zero length: no error';
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION WHEN VALUE_ERROR THEN
     RAISE NOTICE 'SUBSTR zero length: error as expected';
 END;
 $$;
@@ -98,12 +109,19 @@ DO $$
 BEGIN
     PERFORM UTL_RAW.SUBSTR(hextoraw('4142434445'), 2, -1);
     RAISE NOTICE 'SUBSTR negative length: no error';
-EXCEPTION WHEN OTHERS THEN
+EXCEPTION WHEN VALUE_ERROR THEN
     RAISE NOTICE 'SUBSTR negative length: error as expected';
 END;
 $$;
-SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 3, 100) = hextoraw('434445');
-SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 2, NULL) = hextoraw('42434445');
+
+DO $$
+BEGIN
+    PERFORM UTL_RAW.SUBSTR(hextoraw('4142434445'), 3, 100);
+    RAISE NOTICE 'SUBSTR length past the end: no error';
+EXCEPTION WHEN VALUE_ERROR THEN
+    RAISE NOTICE 'SUBSTR length past the end: error as expected';
+END;
+$$;
 SELECT UTL_RAW.SUBSTR(NULL, 1) IS NULL;
 SELECT UTL_RAW.SUBSTR(hextoraw('414243'), NULL, 1) IS NULL;
 

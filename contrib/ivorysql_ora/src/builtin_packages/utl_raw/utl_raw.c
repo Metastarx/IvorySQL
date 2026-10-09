@@ -35,12 +35,14 @@
  *
  *   LENGTH(r)               octet length of r.
  *
- *   SUBSTR(r, pos, len)     1-based byte slice.  pos == 0 is treated as 1.
- *                           A negative pos counts backwards from the end of r
- *                           (-1 is the last byte) and is clamped to the first
- *                           byte when it points before the start.  A pos past
- *                           the end of r, or a len less than 1, raises
- *                           ORA-06502.  A NULL len means "through the end of r".
+ *   SUBSTR(r, pos, len)     1-based byte slice.  A negative pos counts
+ *                           backwards from the end of r (-1 is the last byte)
+ *                           and is clamped to the first byte when it points
+ *                           before the start.  Oracle raises ORA-06502
+ *                           (VALUE_ERROR) when pos is 0, when pos is past the
+ *                           end of r, when len is less than 1, and when len
+ *                           runs past the end of r.  A NULL len means "through
+ *                           the end of r".
  *
  *   CONCAT(r1..r12)         the non-NULL arguments concatenated in order.
  *                           Every argument defaults to NULL; the result is
@@ -127,8 +129,9 @@ raw_new(int len)
 
 /*
  * Shared implementation of the 2-argument (has_len == false) and 3-argument
- * (has_len == true) SUBSTR variants.  A position past the end of the RAW and a
- * length below one raise ORA-06502, matching Oracle.
+ * (has_len == true) SUBSTR variants.  Oracle raises ORA-06502 (VALUE_ERROR)
+ * when pos is 0, when pos is past the end of the RAW, when len is below one,
+ * and when len runs past the end of the RAW.
  */
 static bytea *
 raw_substr(bytea *r, int32 pos, int32 len, bool has_len)
@@ -141,7 +144,9 @@ raw_substr(bytea *r, int32 pos, int32 len, bool has_len)
 	bytea	   *result;
 
 	if (pos == 0)
-		pos = 1;
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("UTL_RAW.SUBSTR: position must not be zero")));
 
 	if (pos > 0)
 		start = pos;
@@ -152,27 +157,26 @@ raw_substr(bytea *r, int32 pos, int32 len, bool has_len)
 	if (start < 1)
 		start = 1;
 
-	/*
-	 * Oracle reports ORA-06502 for a length below one and for a position past
-	 * the end of the RAW instead of returning NULL.
-	 */
-	if (has_len && len < 1)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("UTL_RAW.SUBSTR: length must be greater than zero")));
-
 	if (start > rlen)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("UTL_RAW.SUBSTR: position %d is past the end of the RAW",
 						pos)));
 
+	if (has_len && len < 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("UTL_RAW.SUBSTR: length must be greater than zero")));
+
+	if (has_len && start + (int64) len - 1 > rlen)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("UTL_RAW.SUBSTR: length %d runs past the end of the RAW",
+						len)));
+
 	if (has_len)
 		end = start + (int64) len - 1;
 	else
-		end = rlen;
-
-	if (end > rlen)
 		end = rlen;
 
 	outlen = end - start + 1;
