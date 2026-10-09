@@ -152,13 +152,24 @@ SELECT UTL_RAW.CAST_FROM_BINARY_INTEGER(NULL, 1) IS NULL;
 
 SELECT UTL_RAW.CAST_TO_BINARY_INTEGER(NULL, 1) IS NULL;
 
--- A RAW that is not exactly 4 bytes long is rejected
+-- The default endianness is big_endian, as in Oracle
+SELECT rawtohex(UTL_RAW.CAST_FROM_BINARY_INTEGER(258)) = '00000102';
+
+SELECT UTL_RAW.CAST_TO_BINARY_INTEGER(hextoraw('00000102')) = 258;
+
+-- A RAW shorter than four bytes is read as the bytes it is given: they stay
+-- the low-order bytes and the missing high-order bytes are zero
+SELECT UTL_RAW.CAST_TO_BINARY_INTEGER(hextoraw('0102')) = 258;
+
+SELECT UTL_RAW.CAST_TO_BINARY_INTEGER(hextoraw('FF')) = 255;
+
+-- A RAW longer than four bytes is rejected
 DO $$
 BEGIN
-    PERFORM UTL_RAW.CAST_TO_BINARY_INTEGER(hextoraw('0102'), 1);
-    RAISE NOTICE 'CAST_TO_BINARY_INTEGER short RAW: no error';
+    PERFORM UTL_RAW.CAST_TO_BINARY_INTEGER(hextoraw('0102030405'), 1);
+    RAISE NOTICE 'CAST_TO_BINARY_INTEGER long RAW: no error';
 EXCEPTION WHEN OTHERS THEN
-    RAISE NOTICE 'CAST_TO_BINARY_INTEGER short RAW: error as expected';
+    RAISE NOTICE 'CAST_TO_BINARY_INTEGER long RAW: error as expected';
 END;
 $$;
 
@@ -202,10 +213,10 @@ BEGIN
     RAISE NOTICE 'big_endian=%, little_endian=%, machine_endian=%',
         UTL_RAW.big_endian, UTL_RAW.little_endian, UTL_RAW.machine_endian;
     IF UTL_RAW.CAST_FROM_BINARY_INTEGER(305419896)
-       = UTL_RAW.CAST_FROM_BINARY_INTEGER(305419896, UTL_RAW.machine_endian) THEN
-        RAISE NOTICE 'default endian matches machine_endian';
+       = UTL_RAW.CAST_FROM_BINARY_INTEGER(305419896, UTL_RAW.big_endian) THEN
+        RAISE NOTICE 'default endian is big_endian';
     ELSE
-        RAISE NOTICE 'default endian does not match machine_endian';
+        RAISE NOTICE 'default endian is not big_endian';
     END IF;
     IF UTL_RAW.CAST_FROM_BINARY_INTEGER(1, UTL_RAW.big_endian)
        = hextoraw('00000001') THEN

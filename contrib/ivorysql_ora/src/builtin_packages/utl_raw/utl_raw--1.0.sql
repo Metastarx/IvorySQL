@@ -63,14 +63,14 @@ CREATE OR REPLACE PACKAGE UTL_RAW IS
     FUNCTION CAST_TO_VARCHAR2(r IN RAW) RETURN VARCHAR2;
 
     -- CAST_FROM_BINARY_INTEGER: the 4-byte RAW holding the 32-bit integer bin.
-    -- Oracle defaults endian to machine_endian.  The default here is NULL and
-    -- the body substitutes machine_endian: a PL/iSQL parameter default is
-    -- expanded as a SQL expression, where the package constant is not in
-    -- scope, so the constant is applied inside the body instead.
+    -- Oracle defaults endian to big_endian.  The default here is NULL and the
+    -- body substitutes big_endian: a PL/iSQL parameter default is expanded as
+    -- a SQL expression, where the package constant is not in scope, so the
+    -- constant is applied inside the body instead.
     FUNCTION CAST_FROM_BINARY_INTEGER(bin IN INTEGER,
                                       endian IN INTEGER DEFAULT NULL) RETURN RAW;
 
-    -- CAST_TO_BINARY_INTEGER: the 32-bit integer stored in the 4-byte RAW r
+    -- CAST_TO_BINARY_INTEGER: the 32-bit integer stored in the RAW r
     FUNCTION CAST_TO_BINARY_INTEGER(r IN RAW,
                                     endian IN INTEGER DEFAULT NULL) RETURN INTEGER;
 END;
@@ -98,7 +98,7 @@ CREATE OR REPLACE PACKAGE BODY UTL_RAW IS
         use_endian INTEGER;
     BEGIN
         IF endian IS NULL THEN
-            use_endian := machine_endian;
+            use_endian := big_endian;
         ELSE
             use_endian := endian;
         END IF;
@@ -110,7 +110,7 @@ CREATE OR REPLACE PACKAGE BODY UTL_RAW IS
         use_endian INTEGER;
     BEGIN
         IF endian IS NULL THEN
-            use_endian := machine_endian;
+            use_endian := big_endian;
         ELSE
             use_endian := endian;
         END IF;

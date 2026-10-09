@@ -229,8 +229,10 @@ utl_raw_cast_from_binary_integer(PG_FUNCTION_ARGS)
  * sys.utl_raw_cast_to_binary_integer(bytea, integer) RETURNS integer
  *
  * CAST_TO_BINARY_INTEGER(r, endian): read back a 32-bit two's-complement
- * integer from the 4 bytes of r.  A RAW of any other length is rejected,
- * matching Oracle's ORA-06502.
+ * integer from the bytes of r.  Oracle accepts a RAW shorter than four bytes
+ * and reads the bytes it is given, so 1..4 bytes are accepted; the value keeps
+ * them as the low-order bytes and the missing high-order bytes stay zero.  An
+ * empty RAW or one longer than four bytes is rejected.
  */
 PG_FUNCTION_INFO_V1(utl_raw_cast_to_binary_integer);
 Datum
@@ -238,26 +240,33 @@ utl_raw_cast_to_binary_integer(PG_FUNCTION_ARGS)
 {
 	bytea	   *raw = PG_GETARG_BYTEA_PP(0);
 	int32		endian = PG_GETARG_INT32(1);
+	int			len;
 	const unsigned char *bytes;
-	uint32		uvalue;
+	uint32		uvalue = 0;
+	int			i;
 
-	if (VARSIZE_ANY_EXHDR(raw) != 4)
+	len = VARSIZE_ANY_EXHDR(raw);
+	if (len < 1 || len > 4)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("UTL_RAW.CAST_TO_BINARY_INTEGER: input RAW must be exactly 4 bytes")));
+				 errmsg("UTL_RAW.CAST_TO_BINARY_INTEGER: input RAW must be between 1 and 4 bytes")));
 
 	bytes = (const unsigned char *) VARDATA_ANY(raw);
 
+	/*
+	 * Fold the bytes into the value in significance order, which zero-extends a
+	 * short RAW on the high side and reproduces the plain 4-byte reads.
+	 */
 	if (utl_raw_is_little_endian(endian))
-		uvalue = ((uint32) bytes[0]) |
-			((uint32) bytes[1] << 8) |
-			((uint32) bytes[2] << 16) |
-			((uint32) bytes[3] << 24);
+	{
+		for (i = len - 1; i >= 0; i--)
+			uvalue = (uvalue << 8) | bytes[i];
+	}
 	else
-		uvalue = ((uint32) bytes[0] << 24) |
-			((uint32) bytes[1] << 16) |
-			((uint32) bytes[2] << 8) |
-			((uint32) bytes[3]);
+	{
+		for (i = 0; i < len; i++)
+			uvalue = (uvalue << 8) | bytes[i];
+	}
 
 	PG_RETURN_INT32((int32) uvalue);
 }
