@@ -1951,59 +1951,104 @@ oracle_instr_4 (PG_FUNCTION_ARGS)
  ********************************************************************/
 Datum 
 ora_asciistr(PG_FUNCTION_ARGS) {
-	StringInfoData 	output;
-	text 			*str_arg = NULL;
-	char 			*str = NULL;
-    char			*end = NULL;
-	
+	StringInfoData	output;
+	text		   *str_arg = NULL;
+	char		   *str = NULL;
+	int			len;
+
 	initStringInfo(&output);
 	str_arg = PG_GETARG_TEXT_PP(0);
 	str = VARDATA_ANY(str_arg);
-	end = str + VARSIZE_ANY_EXHDR(str_arg);
+	len = VARSIZE_ANY_EXHDR(str_arg);
 
-    while (str < end) {
-        unsigned char c = *str;
-        uint32_t codePoint;
-		
+	/*
+	 * A text datum is not guaranteed to end on a character boundary.  The
+	 * Oracle-compatible byte-length character types truncate a value at an
+	 * arbitrary byte offset (see the text -> sys.oracharbyte cast in
+	 * datatype--1.0.sql), so a datum can legitimately hold an incomplete
+	 * multi-byte character.
+	 *
+	 * Track the number of bytes left in the datum instead of a pointer to
+	 * its end, and validate each multi-byte sequence with
+	 * pg_encoding_verifymbchar() before it is decoded.  verifymbchar()
+	 * returns -1 for a sequence that is cut short by the end of the datum,
+	 * that contains an illegal continuation byte, or that is an overlong or
+	 * surrogate encoding.  Decoding such a sequence by hand would read (and
+	 * disclose) bytes past the end of the datum, and a datum placed near the
+	 * end of a page could fault the backend.
+	 */
+	while (len > 0) {
+		unsigned char c = *str;
+		uint32_t codePoint;
+
 		if (c == '\\') {
 			/* Handle backslash character */
-			appendUTF16Escape(&output, 0x005C);  // UTF-16 representation of backslash
+			appendUTF16Escape(&output, 0x005C);	/* UTF-16 representation of backslash */
 			str++;
-        } 
-        else if (c < 0x80) {
-            /* ASCII character */
-            appendStringInfoChar(&output, c);
-            str++;
-        } else if ((c & 0xE0) == 0xC0) {
-            /* Two-byte UTF-8 sequence */
-            codePoint = ((c & 0x1F) << 6) | (str[1] & 0x3F);
-            appendUTF16Escape(&output, (uint16_t) codePoint);
-            str += 2;
-        } else if ((c & 0xF0) == 0xE0) {
-            /* Three-byte UTF-8 sequence */
-            codePoint = ((c & 0x0F) << 12) | ((str[1] & 0x3F) << 6) | (str[2] & 0x3F);
-            appendUTF16Escape(&output, (uint16_t) codePoint);
-            str += 3;
-        } else if ((c & 0xF8) == 0xF0) {
-            /* Four-byte UTF-8 sequence */
-			uint16_t highSurrogate, lowSurrogate;
+			len--;
+		}
+		else if (c < 0x80) {
+			/* ASCII character */
+			appendStringInfoChar(&output, c);
+			str++;
+			len--;
+		}
+		else {
+			/*
+			 * Non-ASCII character: the byte length reported by
+			 * verifymbchar() is validated against the bytes that actually
+			 * remain in the datum before any of them is read.
+			 */
+			int			mblen = pg_encoding_verifymbchar(PG_UTF8, str, len);
 
-            codePoint = ((c & 0x07) << 18) | ((str[1] & 0x3F) << 12) | ((str[2] & 0x3F) << 6) | (str[3] & 0x3F);
-            codePoint -= 0x10000;
-            highSurrogate = 0xD800 | (codePoint >> 10);
-            lowSurrogate = 0xDC00 | (codePoint & 0x3FF);
-            appendUTF16Escape(&output, highSurrogate);
-            appendUTF16Escape(&output, lowSurrogate);
-            str += 4;
-        } else {
-            /* Invalid UTF-8 byte */
-			ereport(ERROR,
-			(errcode(ERRCODE_INVALID_PARAMETER_VALUE), errmsg("Invalid bytes")));
-            str++;
-        }
-    }
-	
-    PG_RETURN_TEXT_P(cstring_to_text_with_len(output.data, output.len));
+			if (mblen < 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						 errmsg("Invalid bytes")));
+
+			switch (mblen) {
+				case 2:
+					/* Two-byte UTF-8 sequence */
+					codePoint = ((c & 0x1F) << 6) | (str[1] & 0x3F);
+					appendUTF16Escape(&output, (uint16_t) codePoint);
+					break;
+				case 3:
+					/* Three-byte UTF-8 sequence */
+					codePoint = ((c & 0x0F) << 12) | ((str[1] & 0x3F) << 6) | (str[2] & 0x3F);
+					appendUTF16Escape(&output, (uint16_t) codePoint);
+					break;
+				case 4:
+					/* Four-byte UTF-8 sequence, encoded as a surrogate pair */
+					{
+						uint16_t	highSurrogate;
+						uint16_t	lowSurrogate;
+
+						codePoint = ((c & 0x07) << 18) | ((str[1] & 0x3F) << 12) | ((str[2] & 0x3F) << 6) | (str[3] & 0x3F);
+						codePoint -= 0x10000;
+						highSurrogate = 0xD800 | (codePoint >> 10);
+						lowSurrogate = 0xDC00 | (codePoint & 0x3FF);
+						appendUTF16Escape(&output, highSurrogate);
+						appendUTF16Escape(&output, lowSurrogate);
+					}
+					break;
+				default:
+					/*
+					 * verifymbchar() only reports 2 to 4 byte sequences for a
+					 * non-ASCII first byte, but never risk reading ahead if it
+					 * ever reported something else.
+					 */
+					ereport(ERROR,
+							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+							 errmsg("Invalid bytes")));
+					break;
+			}
+
+			str += mblen;
+			len -= mblen;
+		}
+	}
+
+	PG_RETURN_TEXT_P(cstring_to_text_with_len(output.data, output.len));
 }
 
 

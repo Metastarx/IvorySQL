@@ -3822,6 +3822,90 @@ SELECT INSTR('Information for the information age requires information.', 'infor
  \041F\0440\0438\0432\0435\0442
 (1 row)
 
+ -- A text datum can legally end in the middle of a multi-byte UTF-8
+ -- character: the byte-length Oracle character types truncate a value at
+ -- an arbitrary byte boundary, so asciistr() has to validate each sequence
+ -- against the bytes that actually remain in the datum.
+ select sys.asciistr(convert_from('\x41'::bytea, 'UTF8')::sys.oracharbyte(1)) = 'A' as r from dual;
+ r 
+---
+ t
+(1 row)
+
+ select sys.asciistr(convert_from('\xC3A9'::bytea, 'UTF8')::sys.oracharbyte(2)) = chr(92) || '00E9' as r from dual;
+ r 
+---
+ t
+(1 row)
+
+ select sys.asciistr(convert_from('\xE4BDA0'::bytea, 'UTF8')::sys.oracharbyte(3)) = chr(92) || '4F60' as r from dual;
+ r 
+---
+ t
+(1 row)
+
+ select sys.asciistr(convert_from('\xF09F9880'::bytea, 'UTF8')::sys.oracharbyte(4)) = chr(92) || 'D83D' || chr(92) || 'DE00' as r from dual;
+ r 
+---
+ t
+(1 row)
+
+ -- the byte-length types blank-pad a value shorter than the typmod, but
+ -- converting it to text trims those trailing blanks before asciistr()
+ -- ever sees the datum, so the character itself must round-trip
+ select sys.asciistr(convert_from('\xC3A9'::bytea, 'UTF8')::sys.oracharbyte(3)) = chr(92) || '00E9' as r from dual;
+ r 
+---
+ t
+(1 row)
+
+ select sys.asciistr(convert_from('\xE4BDA0'::bytea, 'UTF8')::sys.oracharbyte(5)) = chr(92) || '4F60' as r from dual;
+ r 
+---
+ t
+(1 row)
+
+ select sys.asciistr(convert_from('\x41E4BDA0'::bytea, 'UTF8')::sys.oracharbyte(6)) = 'A' || chr(92) || '4F60' as r from dual;
+ r 
+---
+ t
+(1 row)
+
+ select sys.asciistr(convert_from('\x41F09F9880'::bytea, 'UTF8')::sys.oracharbyte(5)) = 'A' || chr(92) || 'D83D' || chr(92) || 'DE00' as r from dual;
+ r 
+---
+ t
+(1 row)
+
+ -- a sequence cut short by the truncation is not a valid character, so
+ -- each of these must raise the invalid-bytes error instead of decoding
+ -- bytes that lie past the end of the datum
+ select sys.asciistr(convert_from('\xC3A9'::bytea, 'UTF8')::sys.oracharbyte(1));
+ERROR:  Invalid bytes
+ select sys.asciistr(convert_from('\xE4BDA0'::bytea, 'UTF8')::sys.oracharbyte(1));
+ERROR:  Invalid bytes
+ select sys.asciistr(convert_from('\xE4BDA0'::bytea, 'UTF8')::sys.oracharbyte(2));
+ERROR:  Invalid bytes
+ select sys.asciistr(convert_from('\xF09F9880'::bytea, 'UTF8')::sys.oracharbyte(1));
+ERROR:  Invalid bytes
+ select sys.asciistr(convert_from('\xF09F9880'::bytea, 'UTF8')::sys.oracharbyte(2));
+ERROR:  Invalid bytes
+ select sys.asciistr(convert_from('\xF09F9880'::bytea, 'UTF8')::sys.oracharbyte(3));
+ERROR:  Invalid bytes
+ -- a truncated sequence that follows a valid ASCII character must fail
+ -- the same way, without leaking the bytes that follow it
+ select sys.asciistr(convert_from('\x41C3A9'::bytea, 'UTF8')::sys.oracharbyte(2));
+ERROR:  Invalid bytes
+ select sys.asciistr(convert_from('\x41E4BDA0'::bytea, 'UTF8')::sys.oracharbyte(2));
+ERROR:  Invalid bytes
+ select sys.asciistr(convert_from('\x41E4BDA0'::bytea, 'UTF8')::sys.oracharbyte(3));
+ERROR:  Invalid bytes
+ select sys.asciistr(convert_from('\x41F09F9880'::bytea, 'UTF8')::sys.oracharbyte(2));
+ERROR:  Invalid bytes
+ select sys.asciistr(convert_from('\x41F09F9880'::bytea, 'UTF8')::sys.oracharbyte(3));
+ERROR:  Invalid bytes
+ select sys.asciistr(convert_from('\x41F09F9880'::bytea, 'UTF8')::sys.oracharbyte(4));
+ERROR:  Invalid bytes
 /*
  * compose & decompose
  */
