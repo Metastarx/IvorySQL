@@ -36,12 +36,12 @@
  *   LENGTH(r)               octet length of r.
  *
  *   SUBSTR(r, pos, len)     1-based byte slice.  A negative pos counts
- *                           backwards from the end of r (-1 is the last byte).
- *                           Oracle raises ORA-06502 (VALUE_ERROR) when pos is
- *                           0, when pos resolves before the first byte, when
- *                           pos is past the end of r, when len is less than 1,
- *                           and when len runs past the end of r.  A NULL len
- *                           means "through the end of r".
+ *                           backwards from the end of r (-1 is the last byte)
+ *                           and a pos of 0 is read as 1.  Oracle raises
+ *                           ORA-06502 (VALUE_ERROR) when pos resolves before
+ *                           the first byte, when pos is past the end of r, when
+ *                           len is less than 1, and when len runs past the end
+ *                           of r.  A NULL len means "through the end of r".
  *
  *   CONCAT(r1..r12)         the non-NULL arguments concatenated in order.
  *                           Every argument defaults to NULL; the result is
@@ -68,11 +68,11 @@
  *                           the bytes of overlay_str.  Bytes of target outside
  *                           the overlaid range are kept; a pos past the end of
  *                           target and a len longer than overlay_str are both
- *                           filled with pad (0x00 by default, repeated when
- *                           pad is shorter than the gap).  A len of 0 leaves
- *                           target unchanged; the PL/iSQL wrapper turns a NULL
- *                           len into length(overlay_str) and a NULL pad into
- *                           0x00.
+ *                           filled with the first byte of pad (0x00 by default;
+ *                           Oracle repeats that one byte rather than cycling
+ *                           through pad).  A len of 0 leaves target unchanged;
+ *                           the PL/iSQL wrapper turns a NULL len into
+ *                           length(overlay_str) and a NULL pad into 0x00.
  *
  *   TRANSLATE(r, from, to)  every byte of r found in from is replaced by the
  *                           byte at the same position in to.  When to is
@@ -128,10 +128,10 @@ raw_new(int len)
 
 /*
  * Shared implementation of the 2-argument (has_len == false) and 3-argument
- * (has_len == true) SUBSTR variants.  Oracle raises ORA-06502 (VALUE_ERROR)
- * when pos is 0, when pos resolves before the first byte, when pos is past the
- * end of the RAW, when len is below one, and when len runs past the end of the
- * RAW.
+ * (has_len == true) SUBSTR variants.  Oracle reads a pos of 0 as 1 and raises
+ * ORA-06502 (VALUE_ERROR) when pos resolves before the first byte, when pos is
+ * past the end of the RAW, when len is below one, and when len runs past the
+ * end of the RAW.
  */
 static bytea *
 raw_substr(bytea *r, int32 pos, int32 len, bool has_len)
@@ -144,9 +144,7 @@ raw_substr(bytea *r, int32 pos, int32 len, bool has_len)
 	bytea	   *result;
 
 	if (pos == 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("UTL_RAW.SUBSTR: position must not be zero")));
+		pos = 1;
 
 	if (pos > 0)
 		start = pos;
@@ -466,6 +464,7 @@ raw_overlay(bytea *overlay_str, bytea *target, int32 pos, int32 len,
 	int64		outlen;
 	bytea	   *result;
 	char	   *dst;
+	char		fill;
 	int64		i;
 
 	if (pos < 1)
@@ -496,19 +495,25 @@ raw_overlay(bytea *overlay_str, bytea *target, int32 pos, int32 len,
 		memcpy(dst, tdata, tlen);
 
 	/*
-	 * The window bytes overlay_str does not cover are filled with pad, which
-	 * repeats from its first byte and holds no meaning when pad is absent
-	 * (padlen == 0): those bytes become 0x00 instead of keeping the bytes of
-	 * target that the window replaces.
+	 * The gap between the end of target and the window, and the window bytes
+	 * overlay_str does not cover, are both filled with the first byte of pad
+	 * (0x00 when pad is absent).  Oracle repeats that one byte rather than
+	 * cycling through pad, and it fills the gap instead of leaving it at 0x00.
 	 */
-	for (i = 0; i < len; i++)
+	fill = (padlen > 0) ? pad[0] : (char) 0x00;
+
+	if (len > 0)
 	{
-		if (i < (int64) olen)
-			dst[start + i] = odata[i];
-		else if (padlen > 0)
-			dst[start + i] = pad[(i - olen) % padlen];
-		else
-			dst[start + i] = 0x00;
+		for (i = tlen; i < start; i++)
+			dst[i] = fill;
+
+		for (i = 0; i < len; i++)
+		{
+			if (i < (int64) olen)
+				dst[start + i] = odata[i];
+			else
+				dst[start + i] = fill;
+		}
 	}
 
 	return result;

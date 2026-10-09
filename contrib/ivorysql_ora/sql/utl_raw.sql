@@ -41,7 +41,8 @@ DROP DATABASE utl_raw_latin1;
 -- Types Reference" entry for UTL_RAW.  The cases the documentation leaves
 -- implicit are pinned down here:
 --   * SUBSTR counts forward from the beginning for pos > 0 and backwards from
---     the end for pos < 0 (-1 is the last byte).  A pos of 0, a pos that
+--     the end for pos < 0 (-1 is the last byte); a pos of 0 is read as 1 (the
+--     19c exception table reads otherwise, a 21c run does not).  A pos that
 --     resolves before the first byte, a pos past the end, a len < 1 and a len
 --     that runs past the end all raise ORA-06502.
 --   * BIT_AND/BIT_OR/BIT_XOR work over the longer operand, padding the shorter
@@ -71,21 +72,14 @@ SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 2) = hextoraw('42434445');
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 2, 2) = hextoraw('4243');
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), -2) = hextoraw('4445');
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), -2, 1) = hextoraw('44');
+SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 0) = hextoraw('4142434445');
+SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 0, 2) = hextoraw('4142');
 SELECT UTL_RAW.SUBSTR(hextoraw('4142434445'), 2, NULL) = hextoraw('42434445');
--- A pos of 0, a pos that resolves before the first byte, a pos past the end of
--- the RAW, a len below one and a len that runs past the end all raise
--- VALUE_ERROR (ORA-06502) in Oracle 19c.  The calls go through DO blocks so
--- the expected output does not depend on PL/iSQL source line numbers, and the
--- handler names VALUE_ERROR, so an unrelated error still fails the test.
-DO $$
-BEGIN
-    PERFORM UTL_RAW.SUBSTR(hextoraw('4142434445'), 0);
-    RAISE NOTICE 'SUBSTR zero position: no error';
-EXCEPTION WHEN VALUE_ERROR THEN
-    RAISE NOTICE 'SUBSTR zero position: error as expected';
-END;
-$$;
-
+-- A pos that resolves before the first byte, a pos past the end of the RAW, a
+-- len below one and a len that runs past the end all raise VALUE_ERROR
+-- (ORA-06502) on Oracle 21c.  The calls go through DO blocks so the expected
+-- output does not depend on PL/iSQL source line numbers, and the handler names
+-- VALUE_ERROR, so an unrelated error still fails the test.
 DO $$
 BEGIN
     PERFORM UTL_RAW.SUBSTR(hextoraw('4142434445'), -10);
@@ -232,7 +226,10 @@ SELECT UTL_RAW.OVERLAY(hextoraw('78'), hextoraw('414243'), 1, 3) = hextoraw('780
 SELECT UTL_RAW.OVERLAY(hextoraw('78'), hextoraw('414243'), 1, 3, hextoraw('FF')) = hextoraw('78FFFF');
 SELECT UTL_RAW.OVERLAY(hextoraw('7879'), hextoraw('41424344'), 2, 2, hextoraw('FFFF')) = hextoraw('41787944');
 SELECT UTL_RAW.OVERLAY(hextoraw('99'), hextoraw('414243'), 1, 1, NULL) = hextoraw('994243');
-SELECT UTL_RAW.OVERLAY(hextoraw('78'), hextoraw('414243'), 1, 5, hextoraw('AABB')) = hextoraw('78AABBAABB');
+-- pad fills the gap between target and pos, and the window bytes past
+-- overlay_str, with its first byte repeated (21c).
+SELECT UTL_RAW.OVERLAY(hextoraw('78'), hextoraw('414243'), 1, 5, hextoraw('AABB')) = hextoraw('78AAAAAAAA');
+SELECT UTL_RAW.OVERLAY(hextoraw('AABB'), hextoraw('0102'), 6, 4, hextoraw('EEFF')) = hextoraw('0102EEEEEEAABBEEEE');
 SELECT UTL_RAW.OVERLAY(NULL, hextoraw('78'), 1) IS NULL;
 SELECT UTL_RAW.OVERLAY(hextoraw('41'), NULL) IS NULL;
 
@@ -268,6 +265,7 @@ SELECT sys.utl_raw_compare(hextoraw('4142'), hextoraw('4143')) = 2;
 SELECT sys.utl_raw_compare(hextoraw('4142'), hextoraw('414243'), hextoraw('43')) = 0;
 SELECT sys.utl_raw_overlay(hextoraw('78'), hextoraw('414243'), 1, 1) = hextoraw('784243');
 SELECT sys.utl_raw_overlay_pad(hextoraw('78'), hextoraw('414243'), 1, 3, hextoraw('FF')) = hextoraw('78FFFF');
+SELECT sys.utl_raw_overlay_pad(hextoraw('AABB'), hextoraw('0102'), 6, 4, hextoraw('EEFF')) = hextoraw('0102EEEEEEAABBEEEE');
 SELECT sys.utl_raw_translate(hextoraw('41'), hextoraw('41'), hextoraw('42')) = hextoraw('42');
 SELECT sys.utl_raw_copies(hextoraw('41'), 2) = hextoraw('4141');
 
